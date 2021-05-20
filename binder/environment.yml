@@ -1,7 +1,9 @@
 channels:
   - conda-forge
   - cytoflow
+  - defaults
 dependencies:
+  - python=3.8
   - cytoflow
   - pandas
   - seaborn
