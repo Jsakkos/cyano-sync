@@ -1,0 +1,11 @@
+channels:
+  - conda-forge
+  - cytoflow
+dependencies:
+  - cytoflow
+  - pandas
+  - seaborn
+  - numpy
+  - scipy
+  - matplotlib
+
