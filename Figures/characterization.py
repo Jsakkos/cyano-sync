@@ -19,65 +19,42 @@ from skimage import io
 p = Path('D:/qs-analysis/compiled-data')
 
 files = list(p.glob('**/*.pkl'))
-data = pd.DataFrame(columns=['FITC-A','AHL','IPTG','Family','Replicate'])
+df = pd.DataFrame(columns=['FITC-A','AHL','IPTG','Family','Replicate'])
 for f in files:
     family = str(f.parent).split('\\')[-1]
     tmp = pd.read_pickle(f)
-    data = data.append(tmp,ignore_index=True)
+    df = df.append(tmp,ignore_index=True)
 
 
-# %%
-data
+
 
 
 # %%
 # Subtract WT background from samples
 #data = data[data['FITC-A'] >= 0]
-data['FITC-A'] = data['FITC-A'] - data[data.Family=='WT']['FITC-A'].median()
-data = data[data.Family != 'WT']
+def clean_df(df):
+    data = df
+    data['FITC-A'] = data['FITC-A'] - data[data.Family=='WT']['FITC-A'].median()
+    data = data[data.Family != 'WT']
+
+    data.IPTG = (data.IPTG * 1e3)
+    data.IPTG = data.IPTG.astype('int16')
+
+    gb = data.groupby(['AHL','IPTG','Family'])
+    
+    lg = gb.AHL.transform(np.log10).sort_values()
+    lg[lg == -np.inf] = 0
+    lg = lg.astype('int32')
+    lg.name = 'logAHL'
+    return pd.concat([data,lg],axis=1)
+Data = clean_df(df)
 
 
-# %%
-data.IPTG = (data.IPTG * 1e3)
-data.IPTG = data.IPTG.astype('int16')
-
-
-# %%
-gb = data.groupby(['AHL','IPTG','Family'])
-#Norm = gb.transform(lambda x: x / x.max() * 100)['FITC-A']
-#Norm.name = 'Norm'
-#Data = pd.concat([data,Norm],axis=1)
-lg = gb.AHL.transform(np.log10).sort_values()
-lg[lg == -np.inf] = 0
-lg = lg.astype('int32')
-lg.name = 'logAHL'
-Data = pd.concat([data,lg],axis=1)
-
-
-# %%
 mfi = Data.groupby(['IPTG','Family','logAHL','Replicate']).median().reset_index()
-std = mfi.groupby(['IPTG','Family','logAHL','Replicate']).std().reset_index()
 mfi['R'] = mfi.groupby(['Family','IPTG','Replicate'])['FITC-A'].transform(lambda x: x.max()/x.min())
 
 
-# %%
-mfi
 
-
-# %%
-import matplotlib
-
-#from matplotlib.colors import ListedColormap, LinearSegmentedColormap
-
-
-cmap = matplotlib.cm.get_cmap('Blues')
-colors = cmap(range(8))
-colors
-plt.plot(np.random.uniform(10),c=colors[1])
-
-
-# %%
-colors[0]
 
 
 # %%
@@ -98,7 +75,7 @@ def make_heatmap(median_fluorescence,Family,ax=None, **kwargs):
         **kwargs
         Addition arguments to pass to sns.heatmap
     """
-    sns.set_context('paper')
+    # sns.set_context('paper')
     ax = ax or plt.gca()
     mfi = median_fluorescence[median_fluorescence.Family ==Family]
     # normalized
@@ -130,7 +107,7 @@ def get_hill_params(median_fluorescence,Family):
 
     """
     mfi = median_fluorescence[median_fluorescence.Family ==Family]
-    fits = pd.DataFrame(columns=['Slope','EC50','IPTG'])
+    fits = pd.DataFrame(columns=['Slope','EC50','Min','Max','IPTG','Family'])
     #data = Data[Data.Family =='LuxR']
     #cmap = matplotlib.cm.get_cmap(colormap)
     #colors = cmap(np.linspace(0,1,len(IPTG_range)+1))
@@ -144,13 +121,13 @@ def get_hill_params(median_fluorescence,Family):
             def func(x, a, b):
                 return (max_  - min_) / (1 + 10**(a * (np.log10(b)-np.log10(x)))) + min_
             (a_, b_), _ = opt.curve_fit(func, median.AHL, median['FITC-A'],p0=[1,1e-9],maxfev=10000000)
-            fits=fits.append(pd.DataFrame([[a_,b_,iptg]],columns=['Slope','EC50','IPTG']),ignore_index=True)
+            fits=fits.append(pd.DataFrame([[a_,b_,min_,max_,iptg,Family]],columns=['Slope','EC50','Min','Max','IPTG','Family']),ignore_index=True)
 
     return fits
 
 
 # %%
-def plot_hill(median_fluorescence,standard_deviation,IPTG_range,Family,colormap,ax=None,  **kwargs):
+def plot_hill(median_fluorescence,IPTG_range,Family,fits,colormap,ax=None,  **kwargs):
     """
     This is a function to generate Hill plots
     
@@ -173,10 +150,10 @@ def plot_hill(median_fluorescence,standard_deviation,IPTG_range,Family,colormap,
         **kwargs
         Addition arguments to pass to sns.heatmap
     """
-    sns.set_context('talk')
+    # sns.set_context('talk')
     ax = ax or plt.gca()
     lines = []  
-    fits = pd.DataFrame(columns=['AHL','FITC-A','IPTG'])
+    # fits = pd.DataFrame(columns=['AHL','FITC-A','IPTG'])
     cmap = matplotlib.cm.get_cmap(colormap)
     colors = cmap(np.linspace(0,1,len(IPTG_range)+1))
     mfi = median_fluorescence[median_fluorescence.Family ==Family]
@@ -185,14 +162,15 @@ def plot_hill(median_fluorescence,standard_deviation,IPTG_range,Family,colormap,
     for i,iptg in enumerate(IPTG_range):
         mn = mean[(mean.IPTG==iptg) & (mean.logAHL != 0)]
         sd = std[(std.IPTG==iptg) & (std.logAHL != 0)]
+        fit = fits[fits.IPTG==iptg].mean()
         ax.errorbar(x=mn.logAHL.values,y=mn['FITC-A'].values,yerr=sd['FITC-A'].values,color=colors[i],capsize=5,ls='',marker='o')
-        def func(x, a, b):
-            return (mn['FITC-A'].max() -mn['FITC-A'].min()) / (1 + 10**(a * (np.log10(b)-np.log10(x)))) + mn['FITC-A'].min()
-        (a_, b_), _ = opt.curve_fit(func, mn.AHL, mn['FITC-A'],p0=[1,1e-9],maxfev=10000000)
+        def func(x, slope, ec50,min_,max_):
+            return (max_ -min_) / (1 + 10**(slope * (np.log10(ec50)-np.log10(x)))) + min_
+        
         n = 1e6
         x = np.linspace(mn.AHL.min(), mn.AHL.max(), int(n))
-        y_fit = func(x, a_, b_)
-        fits=fits.append(pd.DataFrame(np.concatenate([[x], [y_fit],[np.ones(len(x))*iptg]]).T,columns=['AHL','FITC-A','IPTG']),ignore_index=True)
+        y_fit = func(x, fit['Slope'], fit['EC50'],fit['Min'],fit['Max'])
+        # fits=fits.append(pd.DataFrame(np.concatenate([[x], [y_fit],[np.ones(len(x))*iptg]]).T,columns=['AHL','FITC-A','IPTG']),ignore_index=True)
         lines2, =ax.plot(np.log10(x), y_fit, '-',color = colors[i],label='IPTG {:.1f} fit'.format(iptg))
         lines += ax.plot(mn.logAHL.values, mn['FITC-A'].values, 'o',color = colors[i],label=r'IPTG {} $\mu M$'.format(iptg))
 
@@ -234,10 +212,10 @@ def plot_hill_params(mfi,Family,colormap,grid,**kwargs):
 
 
 # %%
-fig = plt.figure(figsize=(16,9))
-gs = gridspec.GridSpec(3, 4, figure=fig)
-axs1 = gs.subplots()
-iptg = 5
+# fig = plt.figure(figsize=(16,9))
+# gs = gridspec.GridSpec(3, 4, figure=fig)
+# axs1 = gs.subplots()
+# iptg = 5
 
 def ridge_plot(Data,family,iptg,colormap,grid):
     sns.set(style="white", rc={"axes.facecolor": (0, 0, 0, 0)})
@@ -267,9 +245,9 @@ def ridge_plot(Data,family,iptg,colormap,grid):
             ax.set_xlabel('')
 
 
-ridge_plot(Data,'LuxR',5,'Blues',grid=gs[0,0])
-ridge_plot(Data,'LasR',5,'Reds',grid=gs[1,0])
-ridge_plot(Data,'TraR',5,'Greens',grid=gs[2,0])
+# ridge_plot(Data,'LuxR',5,'Blues',grid=gs[0,0])
+# ridge_plot(Data,'LasR',5,'Reds',grid=gs[1,0])
+# ridge_plot(Data,'TraR',5,'Greens',grid=gs[2,0])
 
 
 # %%
@@ -277,7 +255,7 @@ ridge_plot(Data,'TraR',5,'Greens',grid=gs[2,0])
 
 
 # %%
-fig = plt.figure(constrained_layout=True, figsize=(15,9))
+fig = plt.figure(constrained_layout=True, figsize=(6.5,10))
 gs0 = gridspec.GridSpec(5, 3, figure=fig)
 sns.set_context('paper')
 sns.set_style('white')
@@ -313,8 +291,8 @@ ax9 = fig.add_subplot(gs0[3, 2])
 #ax11 = fig.add_subplot(gs0[1, 3])
 #ax12 = fig.add_subplot(gs0[2, 3])
 
-
-
+# TODO fix this
+#plot_hill(mfi,[0,5,500],'LuxR',fits,'Blues_r',ax=ax)
 plot_hill(mfi,std,[0,5,500],'LuxR','Blues_r',ax4)
 plot_hill(mfi,std,[0,5,500],'LasR','Reds_r',ax5)
 plot_hill(mfi,std,[0,5,500],'TraR','Greens_r',ax6)
@@ -327,9 +305,9 @@ plot_hill_params(mfi,'LuxR',colormap='Blues_r',grid=gs0[4, 0])
 plot_hill_params(mfi,'LasR',colormap='Reds_r',grid=gs0[4, 1])
 plot_hill_params(mfi,'TraR',colormap='Greens_r',grid=gs0[4, 2])
 
-ridge_plot(Data,'LuxR',5,'Blues',grid=gs[1,0])
-ridge_plot(Data,'LasR',5,'Reds',grid=gs[1,1])
-ridge_plot(Data,'TraR',5,'Greens',grid=gs[1,2])
+ridge_plot(Data,'LuxR',5,'Blues',grid=gs0[1,0])
+ridge_plot(Data,'LasR',5,'Reds',grid=gs0[1,1])
+ridge_plot(Data,'TraR',5,'Greens',grid=gs0[1,2])
 
 for ax in [ax1,ax2,ax3]:
     ax.set_ylabel('')
@@ -338,7 +316,7 @@ for ax in [ax1,ax2,ax3]:
     ax.set_xticklabels([])
     for s in spines:
         ax.spines[s].set_visible(False)
-
+fig.tight_layout()
 fig.savefig('SE Characterization.png',dpi=600)
 
 
